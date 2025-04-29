@@ -194,25 +194,29 @@ start_autossh() {
 
 # Function to stop the autossh tunnel
 stop_autossh() {
-    if [ -n "$AUTOSSH_PID" ]; then #check if variable is set
+    if [ -n "$AUTOSSH_PID" ]; then # Check if variable is set
         local pid="${AUTOSSH_PID%%:*}" # Extract only the PID
+        local title="${AUTOSSH_PID#*:}" # Extract the title
         echo "Stopping autossh (PID: $pid)..."
-        kill "$pid"
         if kill "$pid" &> /dev/null; then
             echo "autossh stopped."
-            # Remove the PID from the file
-            sed -i "/^$AUTOSSH_PID:/d" "$AUTOSSH_PIDS_FILE"
         else
-            echo "autossh may not have stopped correctly.  PID: $AUTOSSH_PID"
+            echo "autossh may not have stopped correctly. PID: $pid"
             pkill -f "autossh -M 0 -N -D $SOCKS_BIND_ADDRESS:$port -p $ssh_port -i $key_path $user@$host" > /dev/null 2>&1
             if [ $? -eq 0 ]; then
-               echo "Stopped lingering autossh process."
-               sed -i "/^$AUTOSSH_PID:/d" "$AUTOSSH_PIDS_FILE"
+                echo "Stopped lingering autossh process."
             else
-               echo "Failed to stop lingering autossh process."
+                echo "Failed to stop lingering autossh process."
             fi
         fi
-        unset AUTOSSH_PID #unset the variable
+
+        # Check if the process is still running
+        if ! ps -p "$pid" &> /dev/null; then
+            echo "Removing stale PID $pid from the running proxies file."
+            sed -i "/^$pid:/d" "$AUTOSSH_PIDS_FILE"
+        fi
+
+        unset AUTOSSH_PID # Unset the variable
     else
         echo "No autossh process to stop."
     fi
