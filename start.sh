@@ -87,6 +87,29 @@ EOF
     echo "Configuration saved to '$CONFIG_FILE'."
 }
 
+# Install dependencies if not already installed
+install_dependencies() {
+    echo "Installing necessary dependencies..."
+    # List of required packages
+    local packages=("autossh" "net-tools" "sed" "stat" "ps" "grep" "pkill")
+
+    # Check if the package manager is available
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update
+        sudo apt-get install -y "${packages[@]}"
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y "${packages[@]}"
+    elif command -v pacman &> /dev/null; then
+        sudo pacman -Sy --noconfirm "${packages[@]}"
+    else
+        echo "Error: No supported package manager found. Please install the dependencies manually."
+        return 1
+    fi
+
+    echo "Dependencies installed successfully."
+    return 0
+}
+
 # Function to add a proxy to the list
 add_proxy() {
     read -p "Enter a title for this proxy: " title
@@ -172,17 +195,16 @@ start_autossh() {
 # Function to stop the autossh tunnel
 stop_autossh() {
     if [ -n "$AUTOSSH_PID" ]; then #check if variable is set
-        echo "Stopping autossh (PID: $AUTOSSH_PID)..."
-        kill "$AUTOSSH_PID"
-        wait "$AUTOSSH_PID" # Wait for it to terminate
-        if [ $? -eq 0 ]; then
+        local pid="${AUTOSSH_PID%%:*}" # Extract only the PID
+        echo "Stopping autossh (PID: $pid)..."
+        kill "$pid"
+        if kill "$pid" &> /dev/null; then
             echo "autossh stopped."
             # Remove the PID from the file
             sed -i "/^$AUTOSSH_PID:/d" "$AUTOSSH_PIDS_FILE"
         else
             echo "autossh may not have stopped correctly.  PID: $AUTOSSH_PID"
-            # Try to kill any autossh process for this host and port.
-            pkill -f "autossh -M 0 -N -D $SOCKS_BIND_ADDRESS:$port -p $ssh_port -i $key_path $user@$host"
+            pkill -f "autossh -M 0 -N -D $SOCKS_BIND_ADDRESS:$port -p $ssh_port -i $key_path $user@$host" > /dev/null 2>&1
             if [ $? -eq 0 ]; then
                echo "Stopped lingering autossh process."
                sed -i "/^$AUTOSSH_PID:/d" "$AUTOSSH_PIDS_FILE"
@@ -360,6 +382,7 @@ while true; do
     echo "3 - Close a proxy"
     echo "4 - Edit a proxy" # Added edit
     echo "5 - Delete a proxy" # added delete
+    echo "6 - Install dependencies"
     echo "0 - Exit"
     read -p "Enter your choice: " choice
 
@@ -396,6 +419,13 @@ while true; do
             ;;
         5)
             delete_proxy
+            ;;
+        6)
+            if install_dependencies; then
+                echo "Dependencies installed successfully."
+            else
+                echo "Failed to install dependencies."
+            fi
             ;;
         0)
             echo "Exiting..."
