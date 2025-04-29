@@ -1,11 +1,36 @@
 #!/bin/bash
 
-CONFIG_FILE=".ssh_settings"
+# Configuration file (hidden in user's home directory)
+CONFIG_DIR="$HOME/.ssh_settings"
+SOCKS_DEFAULT_PORT=1080
+KEY_DEFAULT_PATH="$HOME/.ssh/id_rsa"
+SOCKS_BIND_ADDRESS="127.0.0.1" # Define bind address
+CONFIG_FILE="$CONFIG_DIR/proxies.conf" # Store proxy list here
+AUTOSSH_PIDS_FILE="$CONFIG_DIR/autossh_pids" # Store running autossh PIDs
 
-# Function to get user input for port, user, host, and private key path
+# Function to display current configuration
+display_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+        echo "Current configuration:"
+        echo "  Port: $port"
+        echo "  User: $user"
+        echo "  Host: $host"
+        echo "  Key Path: $key_path"
+    else
+        echo "No saved configuration found."
+    fi
+}
+
+# Function to get user input for SSH settings
 get_user_input() {
-    read -p "Enter the port number for SOCKS proxy (default: 1080): " port
-    port=${port:-1080}  # Default to 1080 if empty
+    read -p "Enter the port number for SOCKS proxy (default: $SOCKS_DEFAULT_PORT): " port
+    port="${port:-$SOCKS_DEFAULT_PORT}"
+    # Validate port number
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+        echo "Invalid port number. Using default: $SOCKS_DEFAULT_PORT"
+        port="$SOCKS_DEFAULT_PORT"
+    fi
 
     read -p "Enter the SSH username: " user
     while [[ -z "$user" ]]; do
@@ -19,56 +44,306 @@ get_user_input() {
         read -p "Enter the SSH host: " host
     done
 
-    read -p "Enter the path to your private key (default: ~/.ssh/id_rsa): " key_path
-    key_path=${key_path:-~/.ssh/id_rsa}  # Default to ~/.ssh/id_rsa if empty
+    read -p "Enter the path to your private key (default: $KEY_DEFAULT_PATH): " key_path
+    key_path="${key_path:-$KEY_DEFAULT_PATH}"
 
-    # Expand tilde (~) if used
-    key_path=$(eval echo "$key_path")
+    # Expand tilde (~) if used - using standard parameter expansion
+    key_path=$(echo "$key_path")
 
-    # Ensure the private key file exists
+    # Ensure the private key file exists and has correct permissions
     if [ ! -f "$key_path" ]; then
         echo "Error: Private key file not found at '$key_path'."
         exit 1
+    elif [[ ! -O "$key_path" ]]; then # Check if owned by the user.
+        echo "Warning: Private key file '$key_path' is not owned by you. This might be a security risk."
+    elif [[ $(stat -c "%a" "$key_path") != "600" && $(stat -c "%a" "$key_path") != "400" ]]; then
+        echo "Warning: Private key file '$key_path' has incorrect permissions.  It should be 600 or 400."
     fi
 }
 
-# Check if configuration file exists
-if [ -f "$CONFIG_FILE" ]; then
-    # Read existing values
-    source "$CONFIG_FILE"
-
-    echo "Saved configuration:"
-    echo "Port: $port"
-    echo "User: $user"
-    echo "Host: $host"
-    echo "Key Path: $key_path"
-
-    # Ask if user wants to use saved settings
-    read -p "Use these settings? (y/n): " use_saved
-    if [ "$use_saved" != "y" ]; then
-        get_user_input
-    fi
-else
-    get_user_input
-fi
-
-# Save settings
-cat <<EOF > "$CONFIG_FILE"
-port=$port
-user=$user
-host=$host
-key_path=$key_path
+# Function to save the configuration
+save_config() {
+    mkdir -p "$CONFIG_DIR" # Ensure the directory exists
+    # Use a more descriptive filename like proxies.conf
+    cat <<EOF > "$CONFIG_FILE"
+port="$port"
+user="$user"
+host="$host"
+key_path="$key_path"
 EOF
+    chmod 600 "$CONFIG_FILE" # Restrict permissions.  Important for config files.
+    echo "Configuration saved to '$CONFIG_FILE'."
+}
 
-# Check if autossh is installed
-if ! command -v autossh &> /dev/null; then
-    echo "Error: autossh is not installed. Please install it first."
-    exit 1
-fi
+# Function to add a proxy to the list
+add_proxy() {
+    read -p "Enter a title for this proxy: " title
+    while [[ -z "$title" ]]; do
+        echo "Title cannot be empty."
+        read -p "Enter a title for this proxy: " title
+    done
 
-# Start autossh with SOCKS proxy
-echo "Starting autossh with SOCKS proxy on port $port..."
-autossh -M 0 -N -D "$port" -o "ServerAliveInterval 60" -o "ServerAliveCountMax 3" -i "$key_path" "$user@$host" &
+    get_user_input # Get the proxy details
 
-echo "SOCKS proxy running on 127.0.0.1:$port"
+    # Append to the proxies.conf file
+    echo "$title:$port:$user:$host:$key_path" >> "$CONFIG_FILE"
+    echo "Proxy '$title' added."
+}
+
+# Function to list available proxies
+list_proxies() {
+    if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
+        echo "No proxies configured."
+        return
+    fi
+    echo "Available Proxies:"
+    awk -F':' '{print NR " - " $1}' "$CONFIG_FILE" # Numbered list
+}
+
+# Function to get a proxy from the list
+get_proxy() {
+    list_proxies
+    read -p "Enter the number of the proxy to select (0 to add new): " choice
+    if [[ "$choice" -eq 0 ]]; then
+        add_proxy
+        return 0 # Return 0 to indicate a new proxy was added.
+    fi
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+        echo "Invalid choice."
+        return 1 # Return 1 for an error.
+    fi
+
+    local proxy_data=$(awk -v choice="$choice" 'NR==choice {print}' "$CONFIG_FILE")
+    if [[ -z "$proxy_data" ]]; then
+        echo "Invalid proxy number."
+        return 1
+    fi
+    IFS=':' read -r title port user host key_path <<<"$proxy_data"
+    echo "Selected proxy: $title"
+    return 0 # Return 0 for success
+}
+
+# Function to start the autossh tunnel
+start_autossh() {
+    if ! command -v autossh &> /dev/null; then
+        echo "Error: autossh is not installed. Please install it first."
+        exit 1
+    fi
+
+    echo "Starting autossh with SOCKS proxy on $SOCKS_BIND_ADDRESS:$port..."
+    autossh -M 0 -N -D "$SOCKS_BIND_ADDRESS:$port" \
+            -o "ServerAliveInterval 60" \
+            -o "ServerAliveCountMax 3" \
+            -o "StrictHostKeyChecking=no" \
+            -o "UserKnownHostsFile=/dev/null" \
+            -i "$key_path" "$user@$host" &
+    AUTOSSH_PID=$! # Capture the process ID of autossh
+    echo "SOCKS proxy running on $SOCKS_BIND_ADDRESS:$port (PID: $AUTOSSH_PID)"
+    # Store the PID
+    echo "$AUTOSSH_PID:$title" >> "$AUTOSSH_PIDS_FILE" # Append PID and title
+}
+
+# Function to stop the autossh tunnel
+stop_autossh() {
+    if [ -n "$AUTOSSH_PID" ]; then
+        echo "Stopping autossh (PID: $AUTOSSH_PID)..."
+        kill "$AUTOSSH_PID"
+        wait "$AUTOSSH_PID" # Wait for it to terminate
+        echo "autossh stopped."
+        # Remove the PID from the file
+        sed -i "/^$AUTOSSH_PID:/d" "$AUTOSSH_PIDS_FILE"
+        unset AUTOSSH_PID
+    else
+        echo "No autossh process to stop."
+    fi
+}
+
+# Function to list running proxies
+list_running_proxies() {
+    if [ ! -f "$AUTOSSH_PIDS_FILE" ] || [ ! -s "$AUTOSSH_PIDS_FILE" ]; then
+        echo "No running proxies."
+        return
+    fi
+    echo "Running Proxies:"
+    awk -F':' '{print NR " - " $2 " (PID: " $1 ")"} END{ print "" }' "$AUTOSSH_PIDS_FILE"
+}
+
+# Function to show the logs or check the health of a running proxy.
+show_proxy_status() {
+    list_running_proxies
+    read -p "Enter the number of the proxy to check: " choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+        echo "Invalid choice."
+        return
+    fi
+
+    local pid_data=$(awk -v choice="$choice" 'NR==choice {print}' "$AUTOSSH_PIDS_FILE")
+    if [[ -z "$pid_data" ]]; then
+        echo "Invalid proxy number."
+        return
+    fi
+    IFS=':' read -r pid title <<<"$pid_data"
+
+    # Check if the process is running
+    if ps -p "$pid" &> /dev/null; then
+        echo "Proxy '$title' (PID: $pid) is running."
+        # You could add more sophisticated checks here, like checking network connectivity
+        #  through the proxy, but that's beyond the basics.
+    else
+        echo "Proxy '$title' (PID: $pid) is NOT running."
+        #  Remove from file
+        sed -i "/^$pid:/d" "$AUTOSSH_PIDS_FILE"
+    fi
+}
+
+# Function to edit a proxy
+edit_proxy() {
+    list_proxies
+    read -p "Enter the number of the proxy to edit: " choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+        echo "Invalid choice."
+        return
+    fi
+
+    local proxy_data=$(awk -v choice="$choice" 'NR==choice {print}' "$CONFIG_FILE")
+    if [[ -z "$proxy_data" ]]; then
+        echo "Invalid proxy number."
+        return
+    fi
+
+    IFS=':' read -r title port user host key_path <<<"$proxy_data"
+
+    echo "Current settings for proxy '$title':"
+    echo "  Port: $port"
+    echo "  User: $user"
+    echo "  Host: $host"
+    echo "  Key Path: $key_path"
+
+    # Get new values, defaulting to the old ones
+    read -p "Enter new port number (default: $port): " new_port
+    port="${new_port:-$port}"
+     if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+        echo "Invalid port number. Using default: $SOCKS_DEFAULT_PORT"
+        port="$SOCKS_DEFAULT_PORT"
+    fi
+
+
+    read -p "Enter new username (default: $user): " new_user
+    user="${new_user:-$user}"
+    while [[ -z "$user" ]]; do
+        echo "Username cannot be empty."
+        read -p "Enter new username: " user
+    done
+
+    read -p "Enter new host (default: $host): " new_host
+    host="${new_host:-$host}"
+     while [[ -z "$host" ]]; do
+        echo "Host cannot be empty."
+        read -p "Enter new host: " host
+    done
+
+    read -p "Enter new key path (default: $key_path): " new_key_path
+    key_path="${new_key_path:-$key_path}"
+    key_path=$(echo "$key_path")
+     if [ ! -f "$key_path" ]; then
+        echo "Error: Private key file not found at '$key_path'."
+        exit 1
+    elif [[ ! -O "$key_path" ]]; then # Check if owned by the user.
+        echo "Warning: Private key file '$key_path' is not owned by you. This might be a security risk."
+    elif [[ $(stat -c "%a" "$key_path") != "600" && $(stat -c "%a" "$key_path") != "400" ]]; then
+        echo "Warning: Private key file '$key_path' has incorrect permissions.  It should be 600 or 400."
+    fi
+
+    # Update the line in the config file
+    sed -i "s/^$title:$old_port:$old_user:$old_host:$old_key_path$/$title:$port:$user:$host:$key_path/" "$CONFIG_FILE"
+    echo "Proxy '$title' updated."
+}
+
+# Function to delete a proxy
+delete_proxy() {
+    list_proxies
+    read -p "Enter the number of the proxy to delete: " choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+        echo "Invalid choice."
+        return
+    fi
+
+    local proxy_data=$(awk -v choice="$choice" 'NR==choice {print}' "$CONFIG_FILE")
+     if [[ -z "$proxy_data" ]]; then
+        echo "Invalid proxy number."
+        return
+    fi
+    IFS=':' read -r title port user host key_path <<<"$proxy_data" #get title
+
+    # Stop the proxy if it's running
+    local running_pid=$(awk -F':' -v title="$title" '$2==title {print $1}' "$AUTOSSH_PIDS_FILE")
+    if [ -n "$running_pid" ]; then
+        echo "Stopping proxy '$title' (PID: $running_pid) before deleting..."
+        kill "$running_pid"
+        wait "$running_pid"
+        sed -i "/^$running_pid:/d" "$AUTOSSH_PIDS_FILE" # Remove from running list
+        echo "Proxy '$title' stopped."
+    fi
+    # Delete the line from the config file
+    sed -i "$choice d" "$CONFIG_FILE"
+    echo "Proxy '$title' deleted."
+}
+
+
+
+# Trap Ctrl+C for graceful shutdown
+trap stop_autossh SIGINT SIGTERM
+
+# Main script logic
+while true; do
+    echo "SSH SOCKS Proxy Manager"
+    echo "1 - Start a autossh proxy"
+    echo "2 - List opened proxies"
+    echo "3 - Close a proxy"
+    echo "4 - Edit a proxy" # Added edit
+    echo "5 - Delete a proxy" # added delete
+    echo "0 - Exit"
+    read -p "Enter your choice: " choice
+
+    case "$choice" in
+        1)
+            if get_proxy; then #returns 0 on success
+              start_autossh
+            fi
+            ;;
+        2)
+            list_running_proxies
+            show_proxy_status # Added show status
+            ;;
+        3)
+            list_running_proxies
+            read -p "Enter the number of the proxy to close: " proxy_to_close
+            if ! [[ "$proxy_to_close" =~ ^[0-9]+$ ]]; then
+                echo "Invalid choice."
+            else
+              local pid_to_close=$(awk -v choice="$proxy_to_close" 'NR==choice {print $1}' "$AUTOSSH_PIDS_FILE")
+              if [ -n "$pid_to_close" ]; then
+                AUTOSSH_PID=$pid_to_close
+                stop_autossh
+              else
+                echo "invalid proxy number"
+              fi
+            fi
+            ;;
+        4)
+            edit_proxy
+            ;;
+        5)
+            delete_proxy
+            ;;
+        0)
+            echo "Exiting..."
+            break
+            ;;
+        *)
+            echo "Invalid choice."
+            ;;
+    esac
+done
 
