@@ -3,6 +3,7 @@
 # Configuration file (hidden in user's home directory)
 CONFIG_DIR="$HOME/.ssh_settings"
 SOCKS_DEFAULT_PORT=1080
+SSH_DEFAULT_PORT=22 # Define default SSH port
 KEY_DEFAULT_PATH="$HOME/.ssh/id_rsa"
 SOCKS_BIND_ADDRESS="127.0.0.1" # Define bind address
 CONFIG_FILE="$CONFIG_DIR/proxies.conf" # Store proxy list here
@@ -16,6 +17,7 @@ display_config() {
         echo "  Port: $port"
         echo "  User: $user"
         echo "  Host: $host"
+        echo "  SSH Port: $ssh_port" # Show SSH Port
         echo "  Key Path: $key_path"
     else
         echo "No saved configuration found."
@@ -44,6 +46,15 @@ get_user_input() {
         read -p "Enter the SSH host: " host
     done
 
+    read -p "Enter the SSH port (default: $SSH_DEFAULT_PORT): " ssh_port
+    ssh_port="${ssh_port:-$SSH_DEFAULT_PORT}"
+    # Validate SSH port number
+    if [[ ! "$ssh_port" =~ ^[0-9]+$ ]] || (( ssh_port < 1 || ssh_port > 65535 )); then
+        echo "Invalid SSH port number. Using default: $SSH_DEFAULT_PORT"
+        ssh_port="$SSH_DEFAULT_PORT"
+    fi
+
+
     read -p "Enter the path to your private key (default: $KEY_DEFAULT_PATH): " key_path
     key_path="${key_path:-$KEY_DEFAULT_PATH}"
 
@@ -69,6 +80,7 @@ save_config() {
 port="$port"
 user="$user"
 host="$host"
+ssh_port="$ssh_port" # Save SSH Port
 key_path="$key_path"
 EOF
     chmod 600 "$CONFIG_FILE" # Restrict permissions.  Important for config files.
@@ -86,7 +98,7 @@ add_proxy() {
     get_user_input # Get the proxy details
 
     # Append to the proxies.conf file
-    echo "$title:$port:$user:$host:$key_path" >> "$CONFIG_FILE"
+    echo "$title:$port:$user:$host:$ssh_port:$key_path" >> "$CONFIG_FILE" # Save ssh port
     echo "Proxy '$title' added."
 }
 
@@ -119,7 +131,7 @@ get_proxy() {
         echo "Invalid proxy number."
         return 1
     fi
-    IFS=':' read -r title port user host key_path <<<"$proxy_data"
+    IFS=':' read -r title port user host ssh_port key_path <<<"$proxy_data" # Read ssh port
     echo "Selected proxy: $title"
     return 0 # Return 0 for success
 }
@@ -131,30 +143,54 @@ start_autossh() {
         exit 1
     fi
 
+    # Check if the port is in use
+    if netstat -an | grep -q "$SOCKS_BIND_ADDRESS:$port"; then
+        echo "Error: Port $port is already in use.  Please choose a different port."
+        return 1 # Return 1 to indicate failure
+    fi
+
     echo "Starting autossh with SOCKS proxy on $SOCKS_BIND_ADDRESS:$port..."
     autossh -M 0 -N -D "$SOCKS_BIND_ADDRESS:$port" \
+            -p "$ssh_port" \
             -o "ServerAliveInterval 60" \
             -o "ServerAliveCountMax 3" \
             -o "StrictHostKeyChecking=no" \
             -o "UserKnownHostsFile=/dev/null" \
             -i "$key_path" "$user@$host" &
     AUTOSSH_PID=$! # Capture the process ID of autossh
+    if [ -z "$AUTOSSH_PID" ]; then
+      echo "Error: autossh failed to start."
+      return 1
+    fi
     echo "SOCKS proxy running on $SOCKS_BIND_ADDRESS:$port (PID: $AUTOSSH_PID)"
     # Store the PID and title
     mkdir -p "$CONFIG_DIR" #make sure directory exists
     echo "$AUTOSSH_PID:$title" >> "$AUTOSSH_PIDS_FILE" # Append PID and title
+    return 0
 }
 
 # Function to stop the autossh tunnel
 stop_autossh() {
-    if [ -n "$AUTOSSH_PID" ]; then
+    if [ -n "$AUTOSSH_PID" ]; then #check if variable is set
         echo "Stopping autossh (PID: $AUTOSSH_PID)..."
         kill "$AUTOSSH_PID"
         wait "$AUTOSSH_PID" # Wait for it to terminate
-        echo "autossh stopped."
-        # Remove the PID from the file
-        sed -i "/^$AUTOSSH_PID:/d" "$AUTOSSH_PIDS_FILE"
-        unset AUTOSSH_PID
+        if [ $? -eq 0 ]; then
+            echo "autossh stopped."
+            # Remove the PID from the file
+            sed -i "/^$AUTOSSH_PID:/d" "$AUTOSSH_PIDS_FILE"
+        else
+            echo "autossh may not have stopped correctly.  PID: $AUTOSSH_PID"
+            # Try to kill any autossh process for this host and port.
+            pkill -f "autossh -M 0 -N -D $SOCKS_BIND_ADDRESS:$port -p $ssh_port -i $key_path $user@$host"
+            if [ $? -eq 0 ]; then
+               echo "Stopped lingering autossh process."
+               sed -i "/^$AUTOSSH_PID:/d" "$AUTOSSH_PIDS_FILE"
+            else
+               echo "Failed to stop lingering autossh process."
+            fi
+        fi
+        unset AUTOSSH_PID #unset the variable
     else
         echo "No autossh process to stop."
     fi
@@ -172,7 +208,7 @@ list_running_proxies() {
 
 # Function to show the logs or check the health of a running proxy.
 show_proxy_status() {
-    list_running_proxies
+    list_running_proxies #show the running proxies
     read -p "Enter the number of the proxy to check: " choice
     if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
         echo "Invalid choice."
@@ -213,12 +249,13 @@ edit_proxy() {
         return
     fi
 
-    IFS=':' read -r title port user host key_path <<<"$proxy_data"
+    IFS=':' read -r title port user host ssh_port key_path <<<"$proxy_data" # Read ssh port
 
     echo "Current settings for proxy '$title':"
     echo "  Port: $port"
     echo "  User: $user"
     echo "  Host: $host"
+    echo "  SSH Port: $ssh_port"
     echo "  Key Path: $key_path"
 
     # Get new values, defaulting to the old ones
@@ -244,6 +281,13 @@ edit_proxy() {
         read -p "Enter new host: " host
     done
 
+    read -p "Enter new SSH port (default: $ssh_port): " new_ssh_port
+    ssh_port="${new_ssh_port:-$ssh_port}"
+    if [[ ! "$ssh_port" =~ ^[0-9]+$ ]] || (( ssh_port < 1 || ssh_port > 65535 )); then
+        echo "Invalid SSH port number. Using default: $SSH_DEFAULT_PORT"
+        ssh_port="$SSH_DEFAULT_PORT"
+    fi
+
     read -p "Enter new key path (default: $key_path): " new_key_path
     key_path="${new_key_path:-$key_path}"
     key_path=$(echo "$key_path")
@@ -257,7 +301,7 @@ edit_proxy() {
     fi
 
     # Update the line in the config file
-    sed -i "s/^$title:$old_port:$old_user:$old_host:$old_key_path$/$title:$port:$user:$host:$key_path/" "$CONFIG_FILE"
+    sed -i "s/^$title:$old_port:$old_user:$old_host:$old_ssh_port:$old_key_path$/$title:$port:$user:$host:$ssh_port:$key_path/" "$CONFIG_FILE" #save ssh port
     echo "Proxy '$title' updated."
 }
 
@@ -275,7 +319,7 @@ delete_proxy() {
         echo "Invalid proxy number."
         return
     fi
-    IFS=':' read -r title port user host key_path <<<"$proxy_data" #get title
+    IFS=':' read -r title port user host ssh_port key_path <<<"$proxy_data" #get title and ssh port
 
     # Stop the proxy if it's running
     local running_pid=$(awk -F':' -v title="$title" '$2==title {print $1}' "$AUTOSSH_PIDS_FILE")
@@ -283,8 +327,20 @@ delete_proxy() {
         echo "Stopping proxy '$title' (PID: $running_pid) before deleting..."
         kill "$running_pid"
         wait "$running_pid"
-        sed -i "/^$running_pid:/d" "$AUTOSSH_PIDS_FILE" # Remove from running list
-        echo "Proxy '$title' stopped."
+        if [ $? -eq 0 ]; then
+            echo "Proxy '$title' stopped."
+            sed -i "/^$running_pid:/d" "$AUTOSSH_PIDS_FILE" # Remove from running list
+        else
+            echo "Proxy '$title' may not have stopped.  Removing from list anyway."
+            # Try to kill any autossh process for this host and port.
+            pkill -f "autossh -M 0 -N -D $SOCKS_BIND_ADDRESS:$port -p $ssh_port -i $key_path $user@$host"
+            if [ $? -eq 0 ]; then
+               echo "Stopped lingering autossh process."
+               sed -i "/^$running_pid:/d" "$AUTOSSH_PIDS_FILE"
+            else
+               echo "Failed to stop lingering autossh process."
+            fi
+        fi
     fi
     # Delete the line from the config file
     sed -i "$choice d" "$CONFIG_FILE"
@@ -310,12 +366,15 @@ while true; do
     case "$choice" in
         1)
             if get_proxy; then #returns 0 on success
-              start_autossh
+              if start_autossh; then
+                 : # No further action needed on success
+              else
+                echo "Failed to start proxy."
+              fi
             fi
             ;;
         2)
             list_running_proxies
-            show_proxy_status # Added show status
             ;;
         3)
             list_running_proxies
@@ -323,13 +382,13 @@ while true; do
             if ! [[ "$proxy_to_close" =~ ^[0-9]+$ ]]; then
                 echo "Invalid choice."
             else
-              local pid_to_close=$(awk -v choice="$proxy_to_close" 'NR==choice {print $1}' "$AUTOSSH_PIDS_FILE")
-              if [ -n "$pid_to_close" ]; then
-                AUTOSSH_PID=$pid_to_close
-                stop_autossh
-              else
-                echo "invalid proxy number"
-              fi
+                pid_to_close=$(awk -v choice="$proxy_to_close" 'NR==choice {print $1}' "$AUTOSSH_PIDS_FILE")
+                if [ -n "$pid_to_close" ]; then
+                    AUTOSSH_PID=$pid_to_close #set the global variable
+                    stop_autossh
+                else
+                    echo "invalid proxy number"
+                fi
             fi
             ;;
         4)
