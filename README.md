@@ -1,73 +1,75 @@
-# SOCKS Proxy via AutoSSH
+# SSH SOCKS Proxy Manager
 
-A lightweight Bash script to set up a SOCKS5 proxy using `autossh`. Ideal for users who need a simple, persistent proxy tunnel through an SSH server.
+## Description
 
-## Features
+This script is a simple and user-friendly tool to manage SSH SOCKS proxy connections. It simplifies the process of creating and maintaining secure tunnels, allowing you to bypass certain network restrictions or improve your connection quality by routing your traffic through a remote server. It was primarily tested on Ubuntu.
 
-- Establishes a SOCKS5 proxy via an SSH tunnel.
-- Automatically reconnects using `autossh`.
-- Saves connection settings for convenience.
-- Minimal dependencies (just `autossh`).
+**Key Features:**
 
-## Requirements
+- **Easy Setup:** Simplifies the process of establishing an SSH SOCKS proxy.
+- **Configuration Management:** Saves proxy configurations for easy reuse.
+- **Multiple Proxy Support:** Manage and switch between multiple proxy configurations.
+- **Connection Management:** Start, stop, and list running proxy connections.
+- **Dependency Installation:** Automatically installs required dependencies (autossh, net-tools).
+- **Proxy Editing and Deletion**: Allows users to modify and delete saved proxy configurations.
+- **Tested on Ubuntu**: This script has been tested and is known to work well on Ubuntu systems. It _may_ work on other Linux distributions, but this is not guaranteed.
 
-- A **VPS** or remote server with SSH access.
-- A **private SSH key** to authenticate.
-- `autossh` installed on your local machine.
+## Goal
 
-## Installation
+The primary goal of this script is to provide a convenient way to:
 
-Ensure `autossh` is installed:
+- **Bypass Network Restrictions:** Access content or services that might be blocked by your local network.
+- **Improve Network Quality:** Route your internet traffic through a server with a better connection to a specific destination.
+- **Secure Your Connection:** Encrypt your internet traffic, protecting it from eavesdropping on untrusted networks (like public Wi-Fi).
 
-```sh
-sudo apt update && sudo apt install autossh  # Debian/Ubuntu
-brew install autossh  # macOS
-```
+## Use Cases
 
-Clone this repository and navigate to the script location:
+Here are a few examples of how this script can be used:
 
-```sh
-git clone https://github.com/devarashs/autoshh-proxy.git
-cd autoshh-proxy
-chmod +x start.sh  # Make script executable
-```
+- Accessing region-restricted content.
+- Bypassing firewalls or network filtering.
+- Securing your connection when using public Wi-Fi.
+- Improving network latency for specific online services.
+
+## Important Disclaimer
+
+**Use with care and for educational purposes only.**
+
+This script is intended to be used for legitimate purposes, such as:
+
+- **Educational exploration of network protocols.**
+- **Accessing resources for which you have proper authorization.**
+- **Improving your network security and privacy.**
+
+**It is crucial to understand and respect the terms of service of any network or service you access.** Unauthorized use of this script to bypass restrictions or access resources without permission is strictly prohibited and may be illegal.
+
+The author(s) of this script are not responsible for any misuse or illegal activities performed by users. This tool is provided "as is," without any warranty or guarantee of suitability for any specific purpose. Users are solely responsible for ensuring their use of this script complies with all applicable laws and regulations.
 
 ## Usage
 
-Run the script and follow the prompts:
+1.  **Download the script:** Download the `start.sh` script to your local machine.
+2.  **Make it executable:** `chmod +x start.sh`
+3.  **Run the script:** `./start.sh`
+4.  **Follow the prompts:** The script will guide you through the process of setting up and managing your SSH SOCKS proxy connections.
 
-```sh
-./start.sh
-```
+## Dependencies
 
-It will ask for:
+The script requires the following dependencies:
 
-- The **SOCKS5 port** (default: 1080)
-- Your **SSH username**
-- The **SSH host** (VPS IP or domain)
-- The **path to your SSH private key** (default: `~/.ssh/id_rsa`)
+- `autossh`: For creating and maintaining the SSH tunnel.
+- `net-tools`: For network utilities (e.g., `netstat`).
+- `sed`: For text manipulation.
+- `stat`: For retrieving file status.
+- `ps`: For listing processes
+- `grep`: For searching within files
+- `pkill`: For killing processes by name
 
-Once started, the proxy will be available at:
+The script includes a function to automatically install these dependencies if they are not already installed.
 
-```
-127.0.0.1:<chosen-port>
-```
+## Configuration
 
-To use it, configure your browser or system to route traffic through the SOCKS5 proxy.
+Proxy configurations are saved in `$HOME/.ssh_settings/proxies.conf`. This file should not be manually edited. Use the script's menu options to manage your proxy configurations.
 
-## Example (Manual SSH Command)
+## Support
 
-Alternatively, you can achieve the same result with a manual command:
-
-```sh
-autossh -M 0 -N -D 1080 -o "ServerAliveInterval 60" -o "ServerAliveCountMax 3" -i ~/.ssh/id_rsa user@your-vps-ip
-```
-
-## Notes
-
-- Ensure your **SSH key is properly configured** and the remote server allows port forwarding.
-- If the connection drops, `autossh` will attempt to reconnect automatically.
-
-## License
-
-GNU GENERAL PUBLIC LICENSE Version 3, 29 June 2007
+This script is provided as-is. While I've done my best to make it user-friendly and robust, I cannot provide extensive support. If you encounter problems, please double-check your configuration and ensure you have all the necessary dependencies installed.
