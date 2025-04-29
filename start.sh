@@ -140,7 +140,8 @@ start_autossh() {
             -i "$key_path" "$user@$host" &
     AUTOSSH_PID=$! # Capture the process ID of autossh
     echo "SOCKS proxy running on $SOCKS_BIND_ADDRESS:$port (PID: $AUTOSSH_PID)"
-    # Store the PID
+    # Store the PID and title
+    mkdir -p "$CONFIG_DIR" #make sure directory exists
     echo "$AUTOSSH_PID:$title" >> "$AUTOSSH_PIDS_FILE" # Append PID and title
 }
 
@@ -346,4 +347,3 @@ while true; do
             ;;
     esac
 done
-
